@@ -144,7 +144,7 @@ git push origin v1.0.0
 ## 相关链接
 
 - **原始项目**: [CF_NAT - 优选IP Telegram 频道](https://t.me/CF_NAT)
-- **Telegram**: [@bestcfipas](https://t.me/CF_NAT)
+- **Telegram**: [@CF_NAT](https://t.me/CF_NAT)
 ## Star History
 
 <a href="https://www.star-history.com/#byJoey/ech-wk&type=timeline&logscale&legend=top-left">
