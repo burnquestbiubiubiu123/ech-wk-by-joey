@@ -216,6 +216,10 @@ class ProcessThread(QThread):
             cmd.extend(['-dns', self.config['dns']])
         if self.config.get('ech') and self.config['ech'] != 'cloudflare-ech.com':
             cmd.extend(['-ech', self.config['ech']])
+        # 添加分流模式参数
+        routing_mode = self.config.get('routing_mode', 'bypass_cn')
+        if routing_mode:
+            cmd.extend(['-routing', routing_mode])
         
         try:
             # Windows 上需要指定 UTF-8 编码，因为 Go 程序输出 UTF-8
@@ -1227,6 +1231,7 @@ class MainWindow(QMainWindow):
             # 获取当前监听地址
             listen = self.listen_edit.text()
             if not listen and enabled:
+                self.append_log("[系统] 监听地址为空，无法设置系统代理\n")
                 return False
             
             # 获取分流模式
@@ -1240,6 +1245,9 @@ class MainWindow(QMainWindow):
                     self.append_log("[系统] 分流模式为\"不改变代理\"，跳过系统代理设置\n")
                 return True
             
+            # 注意：分流功能已在 Go 程序中实现，系统代理只需设置为全局代理
+            # Go 程序会根据 -routing 参数自动处理分流
+            
             if sys.platform == 'win32':
                 return self._set_windows_proxy(enabled, listen, routing_mode)
             elif sys.platform == 'darwin':
@@ -1249,56 +1257,17 @@ class MainWindow(QMainWindow):
                 return False
         except Exception as e:
             self.append_log(f"[系统] 设置系统代理失败: {e}\n")
+            import traceback
+            self.append_log(f"[系统] 错误详情: {traceback.format_exc()}\n")
             return False
     
     def _get_proxy_bypass_list(self, routing_mode):
-        """获取代理绕过列表"""
+        """获取代理绕过列表（分流已在 Go 程序中实现，这里只设置本地和内网绕过）"""
         # 基础绕过列表（本地和内网）
+        # 注意：分流功能已在 Go 程序中实现，系统代理设置为全局代理
+        # Go 程序会根据分流模式自动决定哪些流量走代理，哪些直连
         base_bypass = "localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>"
-        
-        if routing_mode == 'global':
-            # 全局代理：只绕过本地和内网
-            return base_bypass
-        elif routing_mode == 'bypass_cn':
-            # 跳过中国大陆：添加中国IP段和常见中国域名
-            cn_domains = [
-                "*.cn", "*.com.cn", "*.net.cn", "*.org.cn", "*.gov.cn", "*.edu.cn",
-                "*.baidu.com", "*.qq.com", "*.taobao.com", "*.tmall.com", "*.alipay.com",
-                "*.weibo.com", "*.sina.com", "*.163.com", "*.126.com", "*.sohu.com",
-                "*.youku.com", "*.iqiyi.com", "*.bilibili.com", "*.douyin.com", "*.douban.com",
-                "*.zhihu.com", "*.jd.com", "*.alibaba.com", "*.1688.com",
-                "*.tencent.com", "*.weixin.qq.com", "*.qzone.com"
-            ]
-            
-            # 使用下载的中国IP列表
-            cn_ip_wildcards = []
-            if self.china_ip_ranges:
-                cn_ip_wildcards = self._convert_ip_ranges_to_wildcards(self.china_ip_ranges)
-            else:
-                # 如果还没加载完成，使用默认的主要IP段
-                cn_ip_wildcards = [
-                    "1.*", "14.*", "27.*", "36.*", "39.*", "42.*", "49.*", "58.*", "59.*", "60.*",
-                    "61.*", "101.*", "103.*", "106.*", "110.*", "111.*", "112.*", "113.*", "114.*", "115.*",
-                    "116.*", "117.*", "118.*", "119.*", "120.*", "121.*", "122.*", "123.*", "124.*", "125.*",
-                    "171.*", "175.*", "180.*", "182.*", "183.*", "202.*", "203.*", "210.*", "211.*", "218.*",
-                    "219.*", "220.*", "221.*", "222.*", "223.*"
-                ]
-            
-            # Windows ProxyOverride 使用分号分隔，支持通配符
-            # 注意：Windows ProxyOverride 有长度限制（约2048字符），需要优化
-            cn_bypass_parts = cn_domains + cn_ip_wildcards
-            cn_bypass = ";".join(cn_bypass_parts)
-            
-            # 如果超过长度限制，只使用域名和主要IP段
-            MAX_LENGTH = 2000
-            if len(cn_bypass) > MAX_LENGTH:
-                # 只使用域名和A段通配符（格式：A.*）
-                a_segment_wildcards = [w for w in cn_ip_wildcards if w.count('.') == 1 and w.endswith('.*')]
-                cn_bypass = ";".join(cn_domains + a_segment_wildcards)
-            
-            return f"{base_bypass};{cn_bypass}"
-        else:
-            return base_bypass
+        return base_bypass
     
     def _set_windows_proxy(self, enabled, listen, routing_mode):
         """设置 Windows 系统代理"""
@@ -1321,7 +1290,9 @@ class MainWindow(QMainWindow):
                 winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
                 # 根据分流模式设置绕过列表
                 bypass_list = self._get_proxy_bypass_list(routing_mode)
+                self.append_log(f"[系统] 设置绕过列表，长度: {len(bypass_list)} 字符\n")
                 winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, bypass_list)
+                self.append_log(f"[系统] Windows 代理已设置: {proxy_server}, 分流模式: {routing_mode}\n")
             else:
                 # 关闭代理
                 winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
@@ -1344,46 +1315,17 @@ class MainWindow(QMainWindow):
             return False
     
     def _get_macos_bypass_list(self, routing_mode):
-        """获取 macOS 代理绕过列表"""
+        """获取 macOS 代理绕过列表（分流已在 Go 程序中实现，这里只设置本地和内网绕过）"""
         # 基础绕过列表（本地和内网）
+        # 注意：分流功能已在 Go 程序中实现，系统代理设置为全局代理
+        # Go 程序会根据分流模式自动决定哪些流量走代理，哪些直连
         base_bypass = [
             "localhost", "127.*", "10.*", "172.16.*", "172.17.*", "172.18.*",
             "172.19.*", "172.20.*", "172.21.*", "172.22.*", "172.23.*", "172.24.*",
             "172.25.*", "172.26.*", "172.27.*", "172.28.*", "172.29.*", "172.30.*",
             "172.31.*", "192.168.*", "*.local", "169.254.*"
         ]
-        
-        if routing_mode == 'global':
-            # 全局代理：只绕过本地和内网
-            return base_bypass
-        elif routing_mode == 'bypass_cn':
-            # 跳过中国大陆：添加中国域名和IP
-            cn_domains = [
-                "*.cn", "*.com.cn", "*.net.cn", "*.org.cn", "*.gov.cn", "*.edu.cn",
-                "*.baidu.com", "*.qq.com", "*.taobao.com", "*.tmall.com", "*.alipay.com",
-                "*.weibo.com", "*.sina.com", "*.163.com", "*.126.com", "*.sohu.com",
-                "*.youku.com", "*.iqiyi.com", "*.bilibili.com", "*.douyin.com", "*.douban.com",
-                "*.zhihu.com", "*.jd.com", "*.alibaba.com", "*.1688.com",
-                "*.tencent.com", "*.weixin.qq.com", "*.qzone.com"
-            ]
-            
-            # 使用下载的中国IP列表（macOS也支持IP通配符）
-            cn_ip_wildcards = []
-            if self.china_ip_ranges:
-                cn_ip_wildcards = self._convert_ip_ranges_to_wildcards(self.china_ip_ranges)
-            else:
-                # 如果还没加载完成，使用默认的主要IP段
-                cn_ip_wildcards = [
-                    "1.*", "14.*", "27.*", "36.*", "39.*", "42.*", "49.*", "58.*", "59.*", "60.*",
-                    "61.*", "101.*", "103.*", "106.*", "110.*", "111.*", "112.*", "113.*", "114.*", "115.*",
-                    "116.*", "117.*", "118.*", "119.*", "120.*", "121.*", "122.*", "123.*", "124.*", "125.*",
-                    "171.*", "175.*", "180.*", "182.*", "183.*", "202.*", "203.*", "210.*", "211.*", "218.*",
-                    "219.*", "220.*", "221.*", "222.*", "223.*"
-                ]
-            
-            return base_bypass + cn_domains + cn_ip_wildcards
-        else:
-            return base_bypass
+        return base_bypass
     
     def _set_macos_proxy(self, enabled, listen, routing_mode):
         """设置 macOS 系统代理"""
